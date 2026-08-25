@@ -32,17 +32,17 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
                        → Stream Relay → Kafka → MySQL 배치 저장
 ```
 
-## 정합성 검증
+### 정합성 검증
 
 정합성 검증은 발급 파이프라인(Redis → Stream/Kafka → MySQL)의 각 단계에서 데이터가
-서로 어긋나지 않는지를 사후적으로 확인하는 모듈입니다. 1차 MVP에서는 **탐지(Detection)** 까지
-구현했고, 2차 MVP에서는 **복구(Recovery)** 와 **실행 스케줄링(Scheduling)** 을 추가할 예정입니다.
+서로 어긋나지 않는지를 사후적으로 확인하는 모듈입니다. 1차 MVP에서는 **탐지** 까지
+구현했고, 2차 MVP에서는 **복구** 와 **실행 스케줄링** 을 추가할 예정입니다.
 
 검증 항목은 트리거 방식과 검증 범위(Scope)를 기준으로 두 그룹으로 나눕니다.
 
 | 그룹 | 트리거 | Scope | 목적 |
 |---|---|---|---|
-| **A그룹** | 이벤트 마감(EVENT CLOSED) 시점 | EVENT (단일 회차) | 재고·발급 수량이 회차 단위로 정확히 맞는지 |
+| **A그룹** | 이벤트 마감 시점 | EVENT (단일 회차) | 재고·발급 수량이 회차 단위로 정확히 맞는지 |
 | **B그룹** | 주기 배치 | AS_OF_RANGE / ALL | 행 단위 구조, 상태 전이, 시간 정합성이 전체 데이터에서 깨진 곳이 없는지 |
 
 ### A그룹 — 재고/발급 정합성 (이벤트 마감 시 실행)
@@ -152,6 +152,8 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
 
 ## 정합성 검증 2차 MVP — 복구 정책 및 스케줄링 (진행중)
 
+---
+
 ## 현재 진행 상황
 
 ### 머지 이력 (develop)
@@ -186,9 +188,9 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
 
 | | 상태 |
 |---|---|
-| 검증 프레임워크 코어 (`ConsistencyVerificationRunner`, `ConsistencyCheck`, `Scope`, `TriggerType`) | ✅ 동작 |
-| **A그룹 체크** (Stock/Duplicate/DuplicateSequence/RedisMysqlLoss, EVENT 마감 트리거) | ✅ 4종 구현 완료 |
-| **B그룹 체크** (IssueHistoryTimeSync/StateMachineLoss/CouponIssueStructuralConsistencyCheck/CouponHistoryStructuralConsistencyCheck/HistoryState/ExpirationLag) | ✅ 6종 구현 완료 |
+| 검증 프레임워크 공통 로직 (`ConsistencyVerificationRunner`, `ConsistencyCheck`, `Scope`, `TriggerType`) | ✅ 동작 |
+| **A그룹 체크**  | ✅ 4종 구현 완료 |
+| **B그룹 체크**  | ✅ 6종 구현 완료 |
 | 검증 결과 저장 (`VerificationResultJpaRepository`) | ✅ 동작 |
 | Spring Batch 대용량 검증  | ✅ 동작 |
 | Batch restart 시 상태 직렬화 (Check 타입/Scope/TriggerType → `ExecutionContext`) | ✅ 구현 (`restartRunAsync`) |
