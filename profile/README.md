@@ -288,6 +288,10 @@ MySQL
 | **RELAY 저장 경로** | ✅ Stream 소비 · 30초 유휴 건 회수 · 3회 재시도 · 전 그룹 ACK 기준 트림 |
 | **확정(CONFIRM)** | ✅ CAS 안에서 카운터 증가 → 재전달돼도 정확히 1회 |
 | 초과 발급 방지 | ✅ 20,000 동시요청 → 승인 10,000 / 음수 재고 0 |
+| **쿠폰 사용 API** `PATCH /api/v1/coupons/{id}/use` | 🟢 **200 / 400 / 404 / 409** (비관적 락 + Idempotency-Key) |
+| **쿠폰 취소 API** `PATCH /api/v1/coupons/{id}/cancel` | 🟢 **200 / 400 / 404 / 409** (상태 복귀 + 감사 이력 기록) |
+| **동시 사용 제어 (비관적 락)** | 🟢 `PESSIMISTIC_WRITE` 기반 동일 쿠폰 동시 요청 1건만 성공, 나머지 `ALREADY_USED` 거절 |
+| **멱등성 보장 (Idempotency)** | 🟢 `CouponStateIdempotency` 테이블 + DB UNIQUE 제약으로 동시/재시도 200 OK 복원 및 409 Conflict 처리 |
 
 **아직 없는 것** : 쿠폰 사용/취소/만료 API, 알림 발송, Nginx 다중 인스턴스 구성,
 Prometheus/Grafana 대시보드, `issue_failure_log` 를 읽는 재처리 스케줄러.
