@@ -88,11 +88,11 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
   - `EXPIRED` → `valid_to` 기준 만료 시점 정합
 - **위반 기준**: 상태와 시각 필드가 논리적으로 맞지 않는 경우 위반 건수로 집계
 
-#### 6) StateMachineLossConsistencyCheck (이력 연속성 검증)
+#### 6) StateMachineConsistencyCheck (이력 연속성 검증)
 
 - **목적**: `coupon_history`의 상태 전이가 허용된 상태 머신 흐름을 따르는지 확인
 - **검증 로직**: 연속된 `coupon_history` 레코드 간 `from_status → to_status`가 허용 전이 목록에 속하는지 확인
-  - 허용 전이: `NULL → ISSUED`, `ISSUED → USED`, `ISSUED → CANCELED`, `ISSUED → EXPIRED`
+  - 허용 전이: `NULL → ISSUED`, `ISSUED → USED`, `ISSUED → EXPIRED`
 - **위반 기준**: 허용되지 않은 전이(역방향 전이, 정의되지 않은 상태로의 전이 등)가 존재하면 위반 건수로 집계
 
 #### 7) CouponIssueStructuralConsistencyCheck (발급 이력 행 구조 검증)
@@ -108,7 +108,7 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
 
 - **목적**: `coupon_history` 한 행의 필수값·시각·전이 형식 검증
 - **발견하려는 문제**:
-  - 상태 변경 이력 누락 또는 잘못된 기록
+  - 존재하는 상태 이력 행의 필수값, 시각, 전이 형식을 검증
   - `occurred_at`(발생 시각)보다 `recorded_at`(기록 시각)이 앞서는 경우
   - 정의되지 않았거나 제거된 상태/전이가 저장된 경우
 
