@@ -318,7 +318,7 @@ cd Ace_FE && npm install && npm run dev   # http://localhost:5173
 | 최근 발급 회차 5건 선택 | `GET /api/v1/events/recent` | ❌ **백엔드 미구현** |
 | 쿠폰 목록 조회 | `GET /api/v1/coupons` | ❌ **백엔드 미구현** |
 | 확정 완료 수 / 대기 수량 표시 | 현황 API의 `confirmedQuantity`, `pendingQuantity` | ❌ FE 미반영 (#35 이후 추가된 필드) |
-| 사용 / 취소 / 만료 처리 | 없음 | ❌ 백엔드 API 없음 (버튼 비활성화 상태) |
+| 사용 / 취소 / 만료 처리 | 구현 중 | 사용, 취소O / 만료 진행X (버튼 비활성화 상태) |
 
 ### 완료
 
