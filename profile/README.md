@@ -92,7 +92,7 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
 
 - **목적**: `coupon_history`의 상태 전이가 허용된 상태 머신 흐름을 따르는지 확인
 - **검증 로직**: 연속된 `coupon_history` 레코드 간 `from_status → to_status`가 허용 전이 목록에 속하는지 확인
-  - 허용 전이: `NULL → ISSUED`, `ISSUED → USED`, `ISSUED → EXPIRED`
+  - 허용 전이: `NULL → ISSUED`, `ISSUED → USED`, `USED → ISSUED`, `ISSUED → EXPIRED`
 - **위반 기준**: 허용되지 않은 전이(역방향 전이, 정의되지 않은 상태로의 전이 등)가 존재하면 위반 건수로 집계
 
 #### 7) CouponIssueStructuralConsistencyCheck (발급 이력 행 구조 검증)
