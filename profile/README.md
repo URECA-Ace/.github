@@ -32,6 +32,126 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
                        → Stream Relay → Kafka → MySQL 배치 저장
 ```
 
+## 정합성 검증
+
+정합성 검증은 발급 파이프라인(Redis → Stream/Kafka → MySQL)의 각 단계에서 데이터가
+서로 어긋나지 않는지를 사후적으로 확인하는 모듈입니다. 1차 MVP에서는 **탐지(Detection)** 까지
+구현했고, 2차 MVP에서는 **복구(Recovery)** 와 **실행 스케줄링(Scheduling)** 을 추가할 예정입니다.
+
+검증 항목은 트리거 방식과 검증 범위(Scope)를 기준으로 두 그룹으로 나눕니다.
+
+| 그룹 | 트리거 | Scope | 목적 |
+|---|---|---|---|
+| **A그룹** | 이벤트 마감(EVENT CLOSED) 시점 | EVENT (단일 회차) | 재고·발급 수량이 회차 단위로 정확히 맞는지 |
+| **B그룹** | 주기 배치 | AS_OF_RANGE / ALL | 행 단위 구조, 상태 전이, 시간 정합성이 전체 데이터에서 깨진 곳이 없는지 |
+
+### A그룹 — 재고/발급 정합성 (이벤트 마감 시 실행)
+
+#### 1) StockConsistencyCheck (재고 정합성 검증)
+
+- **목적**: 이벤트의 재고 카운터와 실제 발급 이력 건수가 일치하는지 확인
+- **검증 로직**:
+  1. `coupon_issue`에서 특정 `event_id`(또는 전체 이벤트)를 가진 레코드 수를 실제 발급 건수로 집계
+  2. `coupon_event`와 조인하여 `실제 발급 건수 + remaining_stock` 을 `total_stock` 과 비교
+  3. `issued_quantity` 컬럼 값과 실제 발급 건수를 비교
+- **위반 기준**: 위 두 비교 중 하나라도 불일치하면 위반 건수로 집계
+- **검증 대상**: 특정 이벤트 단위 또는 전체 이벤트 단위로 실행 가능
+
+#### 2) DuplicateConsistencyCheck (1인 1매 초과 발급 검증)
+
+- **목적**: 사용자별 발급 수량이 이벤트의 `per_user_limit`을 넘지 않았는지 확인
+- **검증 로직**: `coupon_issue`를 `event_id + user_id`로 그룹화하여 건수를 집계 후 `per_user_limit`과 비교
+- **위반 기준**: 그룹별 발급 건수가 `per_user_limit`을 초과하면 위반 건수로 집계
+
+#### 3) DuplicateSequenceConsistencyCheck (순번 중복 검증)
+
+- **목적**: 선착순 순번(`issue_sequence`)이 동일 이벤트 내에서 중복 없이 1명에게만 발급되었는지 확인
+- **검증 로직**: `coupon_issue.issue_sequence`를 `event_id` 기준으로 그룹화하여 동일 순번이 2건 이상 존재하는지 확인
+- **위반 기준**: 동일 `event_id + issue_sequence` 조합이 2건 이상이면 위반 건수로 집계
+
+#### 4) RedisMysqlLossConsistencyCheck (Redis-MySQL 유실 검증)
+
+- **목적**: Redis에서 확정된 재고 소진량과 MySQL에 최종 반영된 이력 건수가 일치하는지 확인 (파이프라인 유실 탐지)
+- **검증 로직**: `coupon_event.total_stock`과 Redis의 `remainingStock`을 이용해 산출한 "Redis 기준 발급 확정 건수"를, `coupon_history`에 저장된 발급 이력 건수와 비교
+- **위반 기준**: 두 값이 불일치하면 위반 건수로 집계 (Redis 확정 → Stream/Kafka → MySQL 반영 구간 중 어딘가에서 유실 또는 중복이 발생했음을 의미)
+
+---
+
+### B그룹 — 구조/상태 정합성 (주기 배치)
+
+#### 5) IssueHistoryTimeSyncConsistencyCheck (시간 동기화 검증)
+
+- **목적**: `coupon_issue`의 상태값과 시각 필드가 서로 맞는지 확인
+- **검증 로직**: 상태별로 대응하는 시각 필드가 채워져 있고 상태와 모순되지 않는지 확인
+  - `ISSUED` → `issued_at` 존재
+  - `USED` → `used_at` 존재
+  - `EXPIRED` → `valid_to` 기준 만료 시점 정합
+- **위반 기준**: 상태와 시각 필드가 논리적으로 맞지 않는 경우 위반 건수로 집계
+
+#### 6) StateMachineLossConsistencyCheck (이력 연속성 검증)
+
+- **목적**: `coupon_history`의 상태 전이가 허용된 상태 머신 흐름을 따르는지 확인
+- **검증 로직**: 연속된 `coupon_history` 레코드 간 `from_status → to_status`가 허용 전이 목록에 속하는지 확인
+  - 허용 전이: `NULL → ISSUED`, `ISSUED → USED`, `ISSUED → CANCELED`, `ISSUED → EXPIRED`
+- **위반 기준**: 허용되지 않은 전이(역방향 전이, 정의되지 않은 상태로의 전이 등)가 존재하면 위반 건수로 집계
+
+#### 7) CouponIssueStructuralConsistencyCheck (발급 이력 행 구조 검증)
+
+- **목적**: `coupon_issue` 한 행 자체의 구조적 결함 탐지
+- **발견하려는 문제**:
+  - 발급 저장 과정에서 필수값 누락
+  - Redis/Stream에서 전달된 식별자(request_id, message_id 등)가 잘못 저장된 경우
+  - 사용·만료 상태와 시각 필드 불일치
+  - 유효기간(`valid_from`~`valid_to`) 계산 오류
+
+#### 8) CouponHistoryStructuralConsistencyCheck (히스토리 행 구조 검증)
+
+- **목적**: `coupon_history` 한 행의 필수값·시각·전이 형식 검증
+- **발견하려는 문제**:
+  - 상태 변경 이력 누락 또는 잘못된 기록
+  - `occurred_at`(발생 시각)보다 `recorded_at`(기록 시각)이 앞서는 경우
+  - 정의되지 않았거나 제거된 상태/전이가 저장된 경우
+
+#### 9) CouponIssueHistoryStateConsistencyCheck (현재 상태-이력 정합성 검증)
+
+- **목적**: `coupon_issue`의 현재 상태와 `coupon_history`의 최신 이력이 서로 일치하는지 확인
+- **발견하려는 문제**:
+  - 상태만 변경되고 이력이 저장되지 않은 경우
+  - 이력만 저장되고 현재 상태 갱신이 실패한 경우
+  - 상태 갱신과 이력 저장이 서로 다른 트랜잭션으로 처리되어 일부만 반영된 경우
+
+#### 10) CouponExpirationLagConsistencyCheck (만료 지연 검증)
+
+- **목적**: 만료 처리 지연 및 만료 이후 사용 처리 여부 검증
+- **발견하려는 문제**:
+  - 만료 Scheduler 미실행 또는 지연
+  - 사용 처리 로직에서 만료 여부를 원자적으로 확인하지 못한 경우
+  - 만료된 쿠폰이 실제로 사용 처리된 경우
+
+---
+
+### 정합성 검증 1차 MVP 요약
+
+| # | 체크명 | 그룹 | 대상 테이블 |
+|---|---|---|---|
+| 1 | Stock | A | coupon_issue, coupon_event |
+| 2 | Duplicate | A | coupon_issue |
+| 3 | DuplicateSequence | A | coupon_issue |
+| 4 | RedisMysqlLoss | A | coupon_event(Redis), coupon_history |
+| 5 | IssueHistoryTimeSync | B | coupon_issue |
+| 6 | StateMachineLoss | B | coupon_history |
+| 7 | CouponIssueStructuralConsistencyCheck | B | coupon_issue |
+| 8 | CouponHistoryStructuralConsistencyCheck | B | coupon_history |
+| 9 | CouponIssueHistoryStateConsistencyCheck | B | coupon_issue + coupon_history |
+| 10 | CouponExpirationLagConsistencyCheck | B | coupon_issue |
+
+- 결과는 `VerificationResult`로 별도 저장소에 기록됩니다.
+- 대용량(300만 건) 검증을 위해 Spring Batch 기반 실행을 지원합니다.
+
+---
+
+## 정합성 검증 2차 MVP — 복구 정책 및 스케줄링 (진행중)
+
 ## 현재 진행 상황
 
 ### 머지 이력 (develop)
@@ -61,6 +181,19 @@ Redis Lua(판정 + XADD) → 202 즉시 응답
 | **상태 조회 API** `GET .../issues/{requestId}` | ✅ 실동작 (200/404) |
 | **Redis 판정 배선** | ✅ `RedisCouponIssueProcessor` → `CouponIssueServiceImpl` |
 | 초과 발급 방지 | ✅ 20,000 동시요청 → 승인 10,000 / 음수 재고 0 (통합 테스트) |
+
+### 현재 동작 되는 것(정합성 검증)
+
+| | 상태 |
+|---|---|
+| 검증 프레임워크 코어 (`ConsistencyVerificationRunner`, `ConsistencyCheck`, `Scope`, `TriggerType`) | ✅ 동작 |
+| **A그룹 체크** (Stock/Duplicate/DuplicateSequence/RedisMysqlLoss, EVENT 마감 트리거) | ✅ 4종 구현 완료 |
+| **B그룹 체크** (IssueHistoryTimeSync/StateMachineLoss/CouponIssueStructuralConsistencyCheck/CouponHistoryStructuralConsistencyCheck/HistoryState/ExpirationLag) | ✅ 6종 구현 완료 |
+| 검증 결과 저장 (`VerificationResultJpaRepository`) | ✅ 동작 |
+| Spring Batch 대용량 검증  | ✅ 동작 |
+| Batch restart 시 상태 직렬화 (Check 타입/Scope/TriggerType → `ExecutionContext`) | ✅ 구현 (`restartRunAsync`) |
+| 재현성/멱등성 (동일 데이터셋 반복 실행 시 동일 결과) | ✅ 확인됨 |
+| 복구 정책 / 실행 스케줄링 | ❌ 미구현 (2차 MVP 예정) |
 
 ---
 
@@ -226,7 +359,7 @@ MySQL
 
 ---
 
-## ✅ 멘토링 질문 리스트
+## ✅ 1차 멘토링 질문 리스트
 
 <details open>
 <summary><b>질문 목록 펼치기</b></summary>
